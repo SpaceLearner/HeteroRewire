@@ -1,0 +1,35 @@
+program: run_exp_hgn_heter_meta_search.py
+method: grid
+project: Hetero
+
+
+parameters:
+  dataset: 
+    values: [FB_American75, Actor, Liar, IMDB]
+
+  thres_min_deg:
+    values: [3.0]
+
+  thres_min_deg_ratio:
+    values: [0.6]
+
+  k:
+    values: [0, 8, 16, 32]
+
+  epsilon:
+    values: [0.0, 0.3, 0.6, 0.9]
+
+  model:
+    values: [GCN, GAT, HAN, RGCN, SHGN]
+
+  use_clf:
+    values: [1]
+
+  rewire_whole:
+    values: [1]
+
+  whole_graph:
+    values: [1]
+
+  use_meta_feat:
+    values: [0]
