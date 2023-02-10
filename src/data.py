@@ -23,17 +23,9 @@ def load_dataset_pyg(dataname="HGB_ACM", seed=0, device=None):
             
             metapaths = [
                 [("paper", "cite", "paper"),  ("paper", "self", "paper")],
-                # [("paper", "ref", "paper"),   ("paper", "self", "paper")],
-                # [("paper", "to", "author")],
-                # [("paper", "cite", "paper") ,   ("paper",   "ref", "paper")],
-                # [("paper", "cite", "paper"),   ("paper", "to", "author"),  ("author",  "to", "paper")],
-               #  [("paper", "cite", "paper"),   ("paper", "to", "subject"), ("subject", "to", "paper")],
-                # [("paper", "ref", "paper"),   ("paper", "to", "author"),  ("author",  "to", "paper")],
-                # [("paper", "ref", "paper"),   ("paper", "to", "subject"), ("subject", "to", "paper")],
-                # [("paper", "cite", "paper"),   ("paper", "to", "term"),    ("term",    "to", "paper")],
                 [("paper", "to",   "author"),  ("author",  "to", "paper")],
-                [("paper", "to",   "subject"), ("subject", "to", "paper")],
-                [("paper", "to",   "term"),    ("term",    "to", "paper")]
+                [("paper", "to",   "subject"), ("subject", "to", "paper")]
+                # [("paper", "to",   "term"),    ("term",    "to", "paper")]
             ]
             
             graph = AddMetaPaths(metapaths=metapaths)(graph)

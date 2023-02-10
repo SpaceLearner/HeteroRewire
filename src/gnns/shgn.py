@@ -11,7 +11,7 @@ from sklearn.metrics import f1_score
 from torch_geometric.data import Data
 from torch_geometric.utils import index_to_mask
 
-from conv import myGATConv
+from .conv import myGATConv
 # from HeteroGraphLearner import ModelHandler as HetModelHandler
 # from GraphLearnerRel import ModelHandler
 from utils.pytorchtools import EarlyStopping

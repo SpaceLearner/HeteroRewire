@@ -444,12 +444,6 @@ class SimEncoder(nn.Module):
             lbl_neb_mask = (deg_mask >= thres_min_deg)
             deg = degree(col, x.size(0), dtype=x.dtype)
             
-            print(thres_min_deg_ratio)
-            
-            print(deg_mask)
-            
-            print(deg)
-            
             lbl_neb_mask_ratio = (deg_mask.float() / (1e-5 + deg.float())) > thres_min_deg_ratio
             print(lbl_neb_mask_ratio.sum())
             lbl_neb_mask *= lbl_neb_mask_ratio
@@ -581,8 +575,6 @@ class ModelHandler(nn.Module):
                 for batch_tar in tar_idx_loader:
                     batch_src = batch_src.to(self.device)
                     batch_tar = batch_tar.to(self.device)
-                    # print(batch_src)
-                    # print(batch_tar)
                     loss_train = self.train_Sim_batch(data, edge_index_dict_rewire, self.graph_learner, optimizer, batch_src, batch_tar)
                     loss_bucket.append(loss_train)
             loss = np.mean(loss_bucket)
@@ -703,16 +695,16 @@ class ModelHandler(nn.Module):
         print('Add {} edges.'.format(edge_index_topk_lbl_dist.shape[1]))
         return edge_index_topk_lbl_dist
 
-    def prunning_x_sim(self, idx, data, thres_prunning=0.):
+    # def prunning_x_sim(self, idx, data, thres_prunning=0.):
         
-        edge_index = data.edge_index
-        feat_sim   = self.graph_learner.x_sim[idx]
-        feat_sim = feat_sim[:data.num_nodes, :data.num_nodes]
-        mask_prunning = feat_sim[edge_index[0], edge_index[1]]
-        mask_prunning = mask_prunning > thres_prunning
-        edge_index_prunning = edge_index[:, mask_prunning]
-        print('Prune {} edges from {} to {}'.format(mask_prunning.shape[0] - mask_prunning.sum(), edge_index.shape, edge_index_prunning.shape))
-        return edge_index_prunning
+    #     edge_index = data.edge_index
+    #     feat_sim   = self.graph_learner.x_sim[idx]
+    #     feat_sim = feat_sim[:data.num_nodes, :data.num_nodes]
+    #     mask_prunning = feat_sim[edge_index[0], edge_index[1]]
+    #     mask_prunning = mask_prunning > thres_prunning
+    #     edge_index_prunning = edge_index[:, mask_prunning]
+    #     print('Prune {} edges from {} to {}'.format(mask_prunning.shape[0] - mask_prunning.sum(), edge_index.shape, edge_index_prunning.shape))
+    #     return edge_index_prunning
 
     def graph_prunning(self, idx, data, thres_prunning=0., embedding=True, cat_self=True):
         # prunning on the original graph
@@ -777,14 +769,13 @@ class ModelHandler(nn.Module):
             data_new.num_nodes = data.xs[0].shape[0]
             data_new.edge_index =list(edge_index_dict_rewire.values())[idx]
             # add edges
-            #edge_index_topk_lbl_dist = self.knn_epsilon_graph(idx, data_new, k=k, thres_lower_sim=epsilon, embedding=embedding_post, cat_self=cat_self)
-            # edge_index_topk_lbl_dist = torch.zeros()
-            edge_index_topk_lbl_dist = None
+            edge_index_topk_lbl_dist = self.knn_epsilon_graph(idx, data_new, k=k, thres_lower_sim=epsilon, embedding=embedding_post, cat_self=cat_self)
+
             # del edges
             edge_index_prunning = None
             if prunning:
-                # edge_index_prunning = self.graph_prunning(idx, data_new, thres_prunning=thres_prunning[idx])
-                edge_index_prunning = self.prunning_x_sim(idx, data_new, thres_prunning=thres_prunning[idx])
+                edge_index_prunning = self.graph_prunning(idx, data_new, thres_prunning=thres_prunning[idx])
+                # edge_index_prunning = self.prunning_x_sim(idx, data_new, thres_prunning=thres_prunning[idx])
             # get final graph
             if self.use_cpu_cache:
                 data_new = data_new.to(self.device)
