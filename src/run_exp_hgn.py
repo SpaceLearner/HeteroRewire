@@ -8,29 +8,29 @@ import os
 import time
 
 import dgl
-import networkx as nx
 import numpy as np
 import torch
-import torch.optim as optim
 from pytorch_lightning import seed_everything
 from torch_geometric.data import Data
-from torch_geometric.datasets import DBLP, IMDB
-from torch_geometric.transforms import AddMetaPaths
-from torch_geometric.utils import (add_self_loops, homophily, index_to_mask,
-                                   remove_isolated_nodes, remove_self_loops,
+from torch_geometric.utils import (add_self_loops, homophily,
+                                   remove_self_loops,
                                    to_undirected)
 from torch_sparse import coalesce
 
-import wandb
+# import wandb
 from data import load_dataset_pyg
 from dataset import *
 from HeteroGraphLearner import ModelHandler
 from models_dgl import Trainer
 
+torch.autograd.set_detect_anomaly(True)
+
 
 def run_exp(dataname="HGB_ACM", seed=0, config=None):
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    
+    print(device)
     
     seed_everything(seed)
     
@@ -41,14 +41,13 @@ def run_exp(dataname="HGB_ACM", seed=0, config=None):
     if not os.path.exists("../saved_graph"):
         os.mkdir("../saved_graph")
 
-    graph, target, train_mask, val_mask, test_mask, labels, num_labels = load_dataset_pyg(dataname, seed=seed)
+    graph, target, train_mask, val_mask, test_mask, labels, num_labels = load_dataset_pyg(dataname, seed=seed, device=device)
     
     # print(graph[target].train_mask.sum() / (graph[target].train_mask.sum() + graph[target].test_mask.sum()))
     # print(graph[target].test_mask.sum() / (graph[target].train_mask.sum() + graph[target].test_mask.sum()))
 
     if dataname[:3] == "HGB":
         feat_distribution  = torch.load("saved_embeds/" + config.dataset     + ".embd")
-       #  feat_distribution  = torch.hstack(feat_distribution)
         features_list      = torch.load("saved_embeds/" + config.dataset[4:] + "_feat.list")
         # feat_distribution  = features_list 
     elif dataname[:2] == "FB":
@@ -59,12 +58,13 @@ def run_exp(dataname="HGB_ACM", seed=0, config=None):
         # feat_distribution  = features_list[0]
     else:
         features_list      = [graph[n_type].x.to(device) for n_type in graph.node_types]
-        feat_distribution  = features_list[0]
-        
-    print(graph)
+    # elif dataname == "Liar":
+    #     features_list      = [graph[n_type].x.to(device) for n_type in graph.node_types]
+    #     feat_distribution  = torch.load("saved_embeds/" + config.dataset     + ".embd")
+    #     if config.rewire_whole:
+    #         features_list[0]   = feat_distribution.to(features_list[0].device)
     
     num_nodes       = [feat.shape[0] for feat in features_list]
-    # # print(features_list[0].shape)
     pos             = torch.cumsum(torch.tensor([0] + [feat.shape[0] for feat in features_list[:-1]], dtype=torch.long), dim=0)# torch.cumsum(torch.tensor([feat.shape[0] for feat in features_list]), dim=0)
     pos             = {graph.node_types[idx]: pos[idx].item() for idx in range(len(graph.node_types))}
     
@@ -111,15 +111,20 @@ def run_exp(dataname="HGB_ACM", seed=0, config=None):
         
         in_sizes       = [feature.shape[1] for feature in features_list_rewire]
         rewirer        = ModelHandler(in_sizes, len(edge_index_dict_rewire), num_labels, device=device, window_size=[config.window_size, config.window_size], num_epoch=200, num_epoch_finetune=30, shuffle=[True, True], thres_min_deg=config.thres_min_deg, thres_min_deg_ratio=config.thres_min_deg_ratio, use_clf=config.use_clf)
-        edge_index     = torch.hstack(list(edge_index_dict.values()))
+        edge_index_dict_temp = copy.deepcopy(edge_index_dict)
+        for key in edge_index_dict.keys():
+            edge_index_dict_temp[key][0] += pos[key[0]]
+            edge_index_dict_temp[key][1] += pos[key[2]]
+        edge_index     = torch.hstack(list(edge_index_dict_temp.values()))
         edge_index     = add_self_loops(to_undirected(edge_index))[0]
-        data0          = Data(edge_index=edge_index, xs=features_list_rewire, num_targets=features_list_rewire[0].shape[0], y=graph[target].y, train_mask=train_mask, val_mask=val_mask, test_mask=test_mask)
+        print(edge_index.shape)
+        data0          = Data(edge_index=edge_index, xs=features_list_rewire, num_targets=features_list_rewire[0].shape[0], y=graph[target].y, train_mask=train_mask, val_mask=val_mask, test_mask=test_mask).to(device)
         # thres_prunning = [0.3, 0.3, 0.3]# config.thres_prunning
         
         if not os.path.exists(config.saved_path):
-            edge_index_dict_rewire = rewirer(data0, edge_index_dict_rewire, prunning=True, epsilon=config.epsilon, k=config.k, thres_prunning=config.thres_prunning, save_path=config.saved_path)
+            edge_index_dict_rewire = rewirer(data0, edge_index_dict_rewire, prunning=True, k=config.k, epsilon=config.epsilon, thres_prunning=config.thres_prunning, save_path=config.saved_path)
         else:
-            edge_index_dict_rewire = rewirer(data0, edge_index_dict_rewire, prunning=True, k=config.k, thres_prunning=config.thres_prunning, load_path=config.saved_path)
+            edge_index_dict_rewire = rewirer(data0, edge_index_dict_rewire, prunning=True, k=config.k, epsilon=config.epsilon, thres_prunning=config.thres_prunning, load_path=config.saved_path)
         
         cnt = 0
         for key, edge_index_rewire in enumerate(edge_index_dict_rewire): 
@@ -253,14 +258,14 @@ def run_exp(dataname="HGB_ACM", seed=0, config=None):
     if config.use_meta_feat:
         in_dims[0] = feat_distribution.shape[1]
 
-    seed = [1234, 2345, 3456, 4567, 5678]
+    # seed = [1234, 2345, 3456, 4567, 5678]
 
     test_f1_macros = []
     test_f1_micros = []
 
     for i in range(1):
 
-        seed_everything(seed[i])
+        seed_everything(seed)
     
         trainer = Trainer(config.model, g, in_dims, num_labels, device, config).to(device)
         
@@ -289,7 +294,7 @@ def run_exp(dataname="HGB_ACM", seed=0, config=None):
 def main(args):
     
     dataname = args.dataset
-    seeds = [0, 1, 2, 3, 4]
+    seeds = [123, 1234, 2345, 3456, 4567]
     results = []
     for idx, seed in enumerate(seeds):
         results.append(run_exp(dataname, seed, config=args))
@@ -313,10 +318,10 @@ if __name__ == "__main__":
     
     parser.add_argument("--dataset",             type=str,   default="HGB_DBLP", help="dataset to use. ")
     parser.add_argument("--model",               type=str,   default="SHGN",     help="model to use. ")
-    parser.add_argument("--thres_min_deg",       type=float, default=16.,         help="threshhold for minimum degrees. ")
+    parser.add_argument("--thres_min_deg",       type=float, default=8.,         help="threshhold for minimum degrees. ")
     parser.add_argument("--thres_min_deg_ratio", type=float, default=0.6,        help="threshhold ratio for minimum degrees. ")
     parser.add_argument("--window_size",         type=int,   default=-1,         help="window size used to rewire. ")
-    parser.add_argument("--epsilon",             type=float, default=0.9,        help="threshhold for edge adding. ")
+    parser.add_argument("--epsilon",             type=float, default=0.99,        help="threshhold for edge adding. ")
     parser.add_argument("--k",                   type=int,   default=8,          help="growing size. ")
     parser.add_argument("--thres_prunning",      type=float, default=0.9,        help="threshhold for edge pruning. ", nargs="+")
     parser.add_argument("--order_neighbors",     type=float, default=2,          help="orde of neighbors to use. ")
@@ -340,42 +345,77 @@ if __name__ == "__main__":
     
     if args.model == "GCN":
         args.lr = 1e-3
-        args.num_layers = 1
         args.weight_decay = 1e-6
+        args.n_layers = 1
+        if args.dataset[:2] == "FB":
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.82
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1, 0.9, 0.9]
     elif args.model == "H2GCN":
         args.lr = 5e-4
         args.num_layers = 2
         args.weight_decay = 1e-6
+        if args.dataset[:2] == "FB":
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.82
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1, 0.9, 0.9]
     elif args.model == "LINKX":
         args.lr = 1e-3
+        if args.dataset[:2] == "FB":
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.82
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1, 0.9, 0.9]
     elif args.model == "RGCN":
         args.lr = 1e-3
         # args.num_layers = 1
         args.hidden = 16
         args.dropout = 0.0
+        if args.dataset[:2] == "FB":
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.6
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1, 0.9, 0.9]
     elif args.model == "GAT":
+        # args.lr = 2e-3
+        # if args.dataset[:3] != "HGB":
+        #     args.num_layers = 1
+        # args.slope = 0.15
+        # args.weight_decay = 1e-3
         args.lr = 1e-3
-        # args.num_layers = 1
-        # args.slope = 0.1
+        if args.dataset[:3] != "HGB":
+            args.num_layers = 2
+        args.slope = 0.1
+        if args.dataset[:2] == "FB":
+            args.k=8
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.82
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1.0, 0.95]
+            args.dropout = 0.6
+            
+    elif args.model == "SHGN":
+        if args.dataset[:2] == "FB":
+            args.thres_min_deg = 8
+            args.thres_min_deg_ratio = 0.82
+            # args.thres_prunning = [-1.0, 0.3, 0.3]
+            args.thres_prunning = [-1, 0.9, 0.9]
         
     if args.dataset == "Actor":
-        args.thres_prunning = [0.1, 0.1, 0.1]
-       #  args.thres_prunning = [0.3, 0.3, 0.3]
-    elif args.dataset[:2] == "FB":
-        args.thres_min_deg = 8
-        args.thres_min_deg_ratio = 0.6
-        args.thres_prunning = [0.3, 0.9, 0.9]
-       #  args.thres_prunning = [0.3, 0.3, 0.3]
+        args.thres_prunning = [0.9, 0.9, 0.9]
+        if args.model == "SHGN":
+            args.k = 0
     elif args.dataset == "Liar":
-        args.thres_prunning = [0.1, 0.1, 0.1]
-    elif args.dataset == "Patent":
-        args.thres_prunning = [0.0, 0.0, 0.0]
+        args.k = 8
+        args.thres_prunning = [0.9, 0.9, 0.8]
     elif args.dataset == "IMDB":
         args.thres_prunning = [-1.0, 0.6]
     elif args.dataset == "HGB_DBLP":
         args.thres_prunning = [0.6, 0.6, 0.6]
     elif args.dataset == "HGB_ACM":
-        args.thres_prunning = [-1.0, 0.9, 0.9]
+        args.thres_prunning = [-1.0, 0.0, 0.9]
         
     args.saved_path = "../saved_graph/graph_" + args.dataset + "_" + str(args.k) + "_"+ str(args.epsilon) + "_" + str(args.thres_min_deg_ratio) + ".pkl"
         

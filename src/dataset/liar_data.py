@@ -18,6 +18,7 @@ from torch_geometric.data import (
 from torch_geometric.utils import index_to_mask, is_undirected, subgraph
 from torch_geometric.transforms import AddMetaPaths
 from sklearn.feature_extraction.text import CountVectorizer
+import scipy
 
 class Liar(InMemoryDataset):
     
@@ -110,7 +111,9 @@ class Liar(InMemoryDataset):
 
         vectorizer = CountVectorizer()
         
-        X = vectorizer.fit_transform(feats)
+        # X = vectorizer.fit_transform(feats)
+        
+        X = scipy.sparse.eye(len(feats))
 
         data = HeteroData()
 
@@ -163,6 +166,9 @@ class Liar(InMemoryDataset):
         data[("subject", "to", "news")].edge_index = torch.flip(torch.tensor(news_to_subject, dtype=torch.long).T, dims=[0])
         data[("news",    "to",  "context")].edge_index = torch.tensor(news_to_context, dtype=torch.long).T
         data[("context", "to", "news")].edge_index = torch.flip(torch.tensor(news_to_context, dtype=torch.long).T, dims=[0])
+        
+        print(data[("news",    "to",  "speaker")].edge_index)
+        print(data[("speaker", "to", "news")].edge_index)
 
         #  data = AddMetaPaths([[("news", "to", "context"), ("context", "to", "news")]])(data)
         
@@ -185,10 +191,12 @@ if __name__ == "__main__":
     
     print(data)
     
-    metapaths = [[("news", "to", "speaker"), ("speaker", "to", "news")],
-                 [("news", "to", "subject"), ("subject", "to", "news")],
-                 [("news", "to", "context"), ("context", "to", "news")]]
+    # metapaths = [[("news", "to", "speaker"), ("speaker", "to", "news")],
+    #              [("news", "to", "subject"), ("subject", "to", "news")],
+    #              [("news", "to", "context"), ("context", "to", "news")]]
     
-    data    = AddMetaPaths(metapaths)(data)
-    print(data[("news", "metapath_0", "news")].edge_index[0].max())
-    print((data["news"].y[data[("news", "metapath_2", "news")].edge_index[0]] == data["news"].y[data[("news", "metapath_2", "news")].edge_index[1]]).sum() / data[("news", "metapath_2", "news")].edge_index.shape[1])
+    # data    = AddMetaPaths(metapaths)(data)
+    # print(data[("news", "metapath_0", "news")].edge_index[0].max())
+    # print((data["news"].y[data[("news", "metapath_2", "news")].edge_index[0]] == data["news"].y[data[("news", "metapath_2", "news")].edge_index[1]]).sum() / data[("news", "metapath_2", "news")].edge_index.shape[1])
+    
+    torch.save(data["news"].x, "../saved_embeds/Liar.embd")

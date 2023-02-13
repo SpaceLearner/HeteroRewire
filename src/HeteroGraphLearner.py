@@ -1,27 +1,18 @@
 import copy
-import logging
 import os
 import os.path as osp
 import random
-import sys
 import time
-from collections import Counter
-from typing import Optional, Tuple, Union
 
 import numpy as np
-import pandas as pd
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-import torch_geometric
 import torch_geometric.transforms as T
 import torch_sparse
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
-from torch_geometric.data import Data
-from torch_geometric.typing import Adj, OptPairTensor, Size
 from torch_geometric.utils import add_self_loops, degree, remove_self_loops
 from torch_sparse import SparseTensor, coalesce, matmul, set_diag
 # from torch_geometric.nn import SplineConv, GCNConv
@@ -137,7 +128,7 @@ class SimEncoder(nn.Module):
         # print(len(out), adj_t)
         return out
 
-    def cal_similarity_batch(self, idx, x, adj_t, batch_src, batch_tar, embedding=False, cat_self=False):
+    def cal_similarity_batch(self, idx, x, adj_t, batch_src, batch_tar, embedding=False, cat_self=True):
         # x = x - x.mean(dim=0, keepdim=True) # subtract center
 
         # x_dist = matmul(adj_t, x, reduce='sum')
@@ -150,7 +141,7 @@ class SimEncoder(nn.Module):
         if cat_self:
             x_dist = torch.cat([x, x_dist], dim=-1)
         # Decentralize
-        x_dist -= x_dist.mean(dim=0, keepdim=True)
+        x_dist = x_dist - x_dist.mean(dim=0, keepdim=True)
 
         # print(batch_src)
         x_dist_src = x_dist[:batch_src.shape[0]][batch_src]
@@ -167,7 +158,7 @@ class SimEncoder(nn.Module):
         # sim = torch.matmul(x_dist, x_dist.T)
         return sim
     
-    def cal_similarity(self, idx, x, adj_t, embedding=False, cat_self=False, device=None):
+    def cal_similarity(self, idx, x, adj_t, embedding=False, cat_self=True, device=None):
         # x = x - x.mean(dim=0, keepdim=True) # subtract center
 
         # x_dist = matmul(adj_t, x, reduce='sum')
@@ -180,7 +171,7 @@ class SimEncoder(nn.Module):
         if cat_self:
             x_dist = torch.cat([x, x_dist], dim=-1)
 
-        x_dist -= x_dist.mean(dim=0, keepdim=True)
+        x_dist = x_dist - x_dist.mean(dim=0, keepdim=True)
         
         norm = x_dist.norm(p=2, dim=1).view(-1, 1)
         norm = torch.matmul(norm, norm.T) + 1e-8
@@ -285,18 +276,13 @@ class SimEncoder(nn.Module):
             # loss = (emb_y_dist_diff.sum() / self.lbl_neb_mask.sum().float().sqrt()).sqrt()
         else:
             if not self.use_cpu_cache:
-                recons_loss = 0.0
-                # for idx in range(len(edge_index_dict_rewire)):
                 emb_sim = self.cal_similarity(idx, emb, self.edge_index_cache, embedding=True) # (N,N)
                 emb_sim = emb_sim[:data.num_targets, :data.num_targets]
-                # print(emb_sim.shape, self.x_sim[0].shape)
-                recons_loss += (self.gather(emb_sim, batch_src, batch_tar) - self.gather(self.x_sim[idx], batch_src, batch_tar, xs[0].device)).pow(2)
+                recons_loss = (self.gather(emb_sim, batch_src.cpu(), batch_tar.cpu()) - self.gather(self.x_sim[idx], batch_src.cpu(), batch_tar.cpu(), xs[0].device)).pow(2)
             else:
-                recons_loss = 0.0
-                # for idx in range(len(edge_index_dict_rewire)):
+               
                 emb_sim = self.cal_similarity_batch(idx, emb, self.edge_index_cache, batch_src, batch_tar, embedding=True) # (n1,n2)
                 emb_sim = emb_sim[:data.num_targets, :data.num_targets]
-                    # print(emb_sim.shape, self.x_sim[0].shape)
                 recons_loss += (emb_sim - self.gather(self.x_sim[idx], batch_src, batch_tar, xs[0].device)).pow(2)
             # recons_loss /= len(edge_index_dict_rewire)
             loss = recons_loss.mean().sqrt()
@@ -349,8 +335,8 @@ class SimEncoder(nn.Module):
         if self.use_clf:
             # classification head
             # hidden = matmul(edge_index_cache, emb)
-            # hidden = matmul(edge_index_cache, emb)
-            logits = self.decoder(F.dropout(emb, p=0.5, training=self.training))
+            hidden = matmul(edge_index_cache, emb)
+            logits = self.decoder(F.dropout(hidden, p=0.5, training=self.training))
             log_probs = F.log_softmax(logits, dim=-1)
             loss_clf = F.nll_loss(log_probs[:data.xs[0].shape[0]][data.train_mask], data.y[:data.xs[0].shape[0]][data.train_mask])
             accs =  []
@@ -369,7 +355,7 @@ class SimEncoder(nn.Module):
                 emb_sim = self.cal_similarity_batch(idx, emb, edge_index_cache, self.lbl_neb_mask[idx], self.lbl_neb_mask[idx], embedding=True) # (N,N)
                 emb_sim = emb_sim[:data.num_targets, :data.num_targets]
                 emb_y_dist_diff = (emb_sim - self.lbl_sim[idx].to(xs[0].device)).pow(2)
-                loss += (emb_y_dist_diff.sum() / self.lbl_neb_mask[idx].sum().float()).sqrt()
+                loss = loss + (emb_y_dist_diff.sum() / (self.lbl_neb_mask[idx].sum().float() + 1e-12)).sqrt()
             print(loss)
             loss /= len(edge_index_dict_rewire)
             # loss = (emb_y_dist_diff.sum() / self.lbl_neb_mask.sum().float().sqrt()).sqrt()
@@ -380,7 +366,7 @@ class SimEncoder(nn.Module):
                     emb_sim = self.cal_similarity(idx, emb, edge_index_cache, embedding=True) # (N,N)
                     emb_sim = emb_sim[:data.num_targets, :data.num_targets]
                     # print(emb_sim.shape, self.x_sim[0].shape)
-                    recons_loss += (self.gather(emb_sim, batch_src, batch_tar) - self.gather(self.x_sim[idx], batch_src, batch_tar, xs[0].device)).pow(2)
+                    recons_loss += (self.gather(emb_sim, batch_src.cpu(), batch_tar.cpu()) - self.gather(self.x_sim[idx], batch_src.cpu(), batch_tar.cpu(), xs[0].device)).pow(2)
             else:
                 recons_loss = 0.0
                 for idx in range(len(edge_index_dict_rewire)):
@@ -421,7 +407,7 @@ class SimEncoder(nn.Module):
         if self.use_cpu_cache:
             # the computation of x_sim is on cpu(slower but do not use gpu memory)
             x_dist = torch.cat(self.moment_calculation(self.adj_t_cache.cpu(), x.cpu(), moment=self.moment), dim=-1).cpu()
-            x_dist -= x_dist.mean(dim=0, keepdim=True)
+            x_dist = x_dist - x_dist.mean(dim=0, keepdim=True)
             x_dist = F.normalize(x_dist, p=2, dim=-1, eps=1e-8)
             self.x_sim = torch.matmul(x_dist, x_dist.T)
         else:
@@ -439,11 +425,12 @@ class SimEncoder(nn.Module):
         for idx, edge_index_rewire in enumerate(list(edge_index_dict_rewire.values())):
             edge_index = coalesce(edge_index_rewire, None, N, N)[0].cpu()
             _, col = edge_index
-            mask_src_train = data.train_mask[edge_index_rewire[0]]
+            mask_src_train = data.train_mask[edge_index_rewire[0].cpu()]
             deg_mask = degree(col[mask_src_train], x.size(0), dtype=x.dtype) # in degree, only count the src nodes in the training set.
             lbl_neb_mask = (deg_mask >= thres_min_deg)
             deg = degree(col, x.size(0), dtype=x.dtype)
             
+            print(thres_min_deg_ratio)
             lbl_neb_mask_ratio = (deg_mask.float() / (1e-5 + deg.float())) > thres_min_deg_ratio
             print(lbl_neb_mask_ratio.sum())
             lbl_neb_mask *= lbl_neb_mask_ratio
@@ -505,11 +492,6 @@ class SimEncoder(nn.Module):
             lbl_sim_merge = lbl_sim * lbl_sim_2nd # (N, N)
             
             self.lbl_sim.append(lbl_sim_merge)
-            
-        # lbl_sim_merge = lbl_sim
-        # print((lbl_sim_merge > 0.99).sum(1).float().mean(), lbl_sim_merge[0])
-        
-        # self.lbl_sim -= torch.diag_embed(self.lbl_sim.diag())
 
 class ModelHandler(nn.Module):
     def __init__(self, in_sizes, num_subgraphs, num_classes, thres_min_deg=10., thres_min_deg_ratio=0.8, hidden=128, device=None, \
@@ -604,6 +586,7 @@ class ModelHandler(nn.Module):
         
     def train_Sim_batch(self, data, edge_index_dict_rewire, model, optimizer, batch_src, batch_tar, clip_grad=False):
         model.train()
+        self.use_multi_task = self.use_multi_task and (len(edge_index_dict_rewire) > 1) 
         if self.use_multi_task:
             grads = {}
             scale = {}
@@ -611,15 +594,22 @@ class ModelHandler(nn.Module):
             optimizer.zero_grad()
             rep, loss_clf = model.forward_rep(data, edge_index_dict_rewire, batch_src, batch_tar)
             rep_variable = Variable(rep.data.clone(), requires_grad=True)
+           
             for idx in range(len(edge_index_dict_rewire)):
                 optimizer.zero_grad()
                 loss = model.forward_task(idx, rep_variable, data, batch_src, batch_tar, finetune=False)
                 # loss_data[idx] = loss.detach().cpu().item()
                 # rep.retain_grad()
                 loss.backward()
+               
                 # grads[idx] = []
                 grads[idx] = Variable(rep_variable.grad.data.clone(), requires_grad=False)
                 rep_variable.grad.data.zero_()
+                
+            gn = gradient_normalizers(grads, loss_data, "l2")
+            for t in range(len(edge_index_dict_rewire)):
+                for gr_i in range(len(grads[t])):
+                    grads[t][gr_i] = grads[t][gr_i] / gn[t]
             sol, min_norm = MinNormSolver.find_min_norm_element([grads[idx].view(-1).detach().cpu().numpy() for idx in range(len(edge_index_dict_rewire))])
             for i, t in enumerate(range(len(edge_index_dict_rewire))):
                 scale[t] = float(sol[i])
@@ -681,10 +671,11 @@ class ModelHandler(nn.Module):
         feat_sim = feat_sim[:data.xs[0].shape[0], :data.xs[0].shape[0]].contiguous()
         print(feat_sim.shape)
         # feat_sim = lbl_sim
-        feat_sim -= (torch.diag_embed(feat_sim.diag()) * -1000)
+        feat_sim -= (torch.diag_embed(feat_sim.diag()) * 1000)
         if thres_lower_sim is None:
-            thres_lower_sim = np.quantile(feat_sim.view(-1).numpy(), q=1.0 - 0.1 * data.num_edges / feat_sim.view(-1).shape[0])
-        print(thres_lower_sim, data.num_edges)
+            thres_lower_sim = np.quantile(feat_sim.view(-1).numpy(), q=1.0 - 1.1 * data.num_edges / feat_sim.view(-1).shape[0])
+        # print(thres_lower_sim, data.num_edges)
+        # print(feat_sim[:10, :10])
         topk_lbl_sim = feat_sim.topk(k=k, dim=1, largest=True, sorted=False)
         # print(topk_lbl_sim.indices.shape)
         row = torch.stack([torch.arange(0, data.xs[0].shape[0], device=self.device) for _ in range(k)], dim=-1).view(-1)
@@ -692,23 +683,14 @@ class ModelHandler(nn.Module):
         assert row.shape == col.shape
         edge_index_topk_lbl_dist = torch.stack((row, col), dim=0).long()
         edge_index_topk_lbl_dist = edge_index_topk_lbl_dist[:, topk_lbl_sim.values.view(-1) >= thres_lower_sim]
+        edge_index_topk_lbl_dist = remove_self_loops(edge_index_topk_lbl_dist)[0]
+        print(edge_index_topk_lbl_dist[:, :100])
         print('Add {} edges.'.format(edge_index_topk_lbl_dist.shape[1]))
         return edge_index_topk_lbl_dist
 
-    # def prunning_x_sim(self, idx, data, thres_prunning=0.):
-        
-    #     edge_index = data.edge_index
-    #     feat_sim   = self.graph_learner.x_sim[idx]
-    #     feat_sim = feat_sim[:data.num_nodes, :data.num_nodes]
-    #     mask_prunning = feat_sim[edge_index[0], edge_index[1]]
-    #     mask_prunning = mask_prunning > thres_prunning
-    #     edge_index_prunning = edge_index[:, mask_prunning]
-    #     print('Prune {} edges from {} to {}'.format(mask_prunning.shape[0] - mask_prunning.sum(), edge_index.shape, edge_index_prunning.shape))
-    #     return edge_index_prunning
-
     def graph_prunning(self, idx, data, thres_prunning=0., embedding=True, cat_self=True):
         # prunning on the original graph
-        edge_index = data.edge_index
+        edge_index = data.edge_index.cpu()
         
         feat_sim = self.get_emb(idx, data, embedding=embedding, cat_self=cat_self)[0].cpu()
         feat_sim = feat_sim[:data.num_nodes, :data.num_nodes]
@@ -735,7 +717,7 @@ class ModelHandler(nn.Module):
                 edge_index_merge = data.edge_index
         else:
             if edge_index_prunning is not None:
-                edge_index_merge = coalesce(torch.cat((edge_index_prunning, edge_index_topk_lbl_dist), dim=-1), None, data.num_nodes, data.num_nodes)[0]
+                edge_index_merge = coalesce(torch.cat((edge_index_prunning.to(self.device), edge_index_topk_lbl_dist), dim=-1), None, data.num_nodes, data.num_nodes)[0]
             else:
                 edge_index_merge = coalesce(torch.cat((data.edge_index, edge_index_topk_lbl_dist), dim=-1), None, data.num_nodes, data.num_nodes)[0]
         # edge_index_merge = edge_index_prunning
